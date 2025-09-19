@@ -192,6 +192,96 @@ class JiraMCPClient:
 
         return None
 
+    async def _resolve_assignee_account_id(self, project_key: str, assignee_text: str) -> Optional[str]:
+        """Resolve an assignee provided as email/name/accountId to a valid accountId assignable to the project.
+
+        Strategy:
+        - Try Jira Cloud assignable users search scoped to the project
+        - Prefer exact match by accountId, then email (if available), then displayName
+        - Fallback to global user search
+        - Return None if not resolvable
+        """
+        identifier = (assignee_text or "").strip()
+        if not identifier:
+            return None
+
+        # Helper to choose best candidate from a list of user dicts
+        def pick_best(users: list[Dict[str, Any]]) -> Optional[str]:
+            if not users:
+                return None
+            # Exact accountId match
+            for u in users:
+                if str(u.get("accountId", "")).strip() == identifier:
+                    return u.get("accountId")
+            # Exact email match (may be missing in Cloud due to privacy)
+            for u in users:
+                email = (u.get("emailAddress") or "").strip().lower()
+                if email and email == identifier.lower():
+                    return u.get("accountId")
+            # Exact display name match
+            for u in users:
+                name = (u.get("displayName") or "").strip()
+                if name and name.lower() == identifier.lower():
+                    return u.get("accountId")
+            # Startswith display name
+            for u in users:
+                name = (u.get("displayName") or "").strip()
+                if name and name.lower().startswith(identifier.lower()):
+                    return u.get("accountId")
+            # Fallback to first user
+            return users[0].get("accountId")
+
+        # 1) Try assignable search scoped to the project
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"{self.base_url}/rest/api/3/user/assignable/search",
+                    params={"project": project_key, "query": identifier, "maxResults": 20},
+                    auth=self.auth,
+                    headers=self.headers,
+                )
+            if resp.status_code == 200:
+                users = resp.json() or []
+                best = pick_best(users)
+                if best:
+                    return best
+        except Exception:
+            pass
+
+        # 2) If identifier looks like an accountId, verify it directly
+        if identifier and all(ch.isalnum() or ch in {":", "-"} for ch in identifier):
+            try:
+                async with httpx.AsyncClient() as client:
+                    uresp = await client.get(
+                        f"{self.base_url}/rest/api/3/user",
+                        params={"accountId": identifier},
+                        auth=self.auth,
+                        headers=self.headers,
+                    )
+                if uresp.status_code == 200:
+                    return identifier
+            except Exception:
+                pass
+
+        # 3) Fallback to global user search
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"{self.base_url}/rest/api/3/user/search",
+                    params={"query": identifier, "maxResults": 20},
+                    auth=self.auth,
+                    headers=self.headers,
+                )
+            if resp.status_code == 200:
+                users = resp.json() or []
+                best = pick_best(users)
+                if best:
+                    return best
+        except Exception:
+            pass
+
+        return None
+
     async def create_issue(
         self,
         project_key: str,
@@ -235,7 +325,9 @@ class JiraMCPClient:
         if components:
             issue_data["fields"]["components"] = [{"name": c} for c in components]
         if assignee:
-            issue_data["fields"]["assignee"] = {"accountId": assignee}
+            resolved_account_id = await self._resolve_assignee_account_id(project_key, assignee)
+            if resolved_account_id:
+                issue_data["fields"]["assignee"] = {"accountId": resolved_account_id}
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -284,4 +376,95 @@ def get_jira_client() -> JiraMCPClient:
         )
     return _jira_singleton
 
+
+
+    async def _resolve_assignee_account_id(self, project_key: str, assignee_text: str) -> Optional[str]:
+        """Resolve an assignee provided as email/name/accountId to a valid accountId assignable to the project.
+
+        Strategy:
+        - Try Jira Cloud assignable users search scoped to the project
+        - Prefer exact match by accountId, then email (if available), then displayName
+        - Fallback to global user search
+        - Return None if not resolvable
+        """
+        identifier = (assignee_text or "").strip()
+        if not identifier:
+            return None
+
+        # Helper to choose best candidate from a list of user dicts
+        def pick_best(users: list[Dict[str, Any]]) -> Optional[str]:
+            if not users:
+                return None
+            # Exact accountId match
+            for u in users:
+                if str(u.get("accountId", "")).strip() == identifier:
+                    return u.get("accountId")
+            # Exact email match (may be missing in Cloud due to privacy)
+            for u in users:
+                email = (u.get("emailAddress") or "").strip().lower()
+                if email and email == identifier.lower():
+                    return u.get("accountId")
+            # Exact display name match
+            for u in users:
+                name = (u.get("displayName") or "").strip()
+                if name and name.lower() == identifier.lower():
+                    return u.get("accountId")
+            # Startswith display name
+            for u in users:
+                name = (u.get("displayName") or "").strip()
+                if name and name.lower().startswith(identifier.lower()):
+                    return u.get("accountId")
+            # Fallback to first user
+            return users[0].get("accountId")
+
+        # 1) Try assignable search scoped to the project
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"{self.base_url}/rest/api/3/user/assignable/search",
+                    params={"project": project_key, "query": identifier, "maxResults": 20},
+                    auth=self.auth,
+                    headers=self.headers,
+                )
+            if resp.status_code == 200:
+                users = resp.json() or []
+                best = pick_best(users)
+                if best:
+                    return best
+        except Exception:
+            pass
+
+        # 2) If identifier looks like an accountId, verify it directly
+        if identifier and all(ch.isalnum() or ch in {":", "-"} for ch in identifier):
+            try:
+                async with httpx.AsyncClient() as client:
+                    uresp = await client.get(
+                        f"{self.base_url}/rest/api/3/user",
+                        params={"accountId": identifier},
+                        auth=self.auth,
+                        headers=self.headers,
+                    )
+                if uresp.status_code == 200:
+                    return identifier
+            except Exception:
+                pass
+
+        # 3) Fallback to global user search
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"{self.base_url}/rest/api/3/user/search",
+                    params={"query": identifier, "maxResults": 20},
+                    auth=self.auth,
+                    headers=self.headers,
+                )
+            if resp.status_code == 200:
+                users = resp.json() or []
+                best = pick_best(users)
+                if best:
+                    return best
+        except Exception:
+            pass
+
+        return None
 
